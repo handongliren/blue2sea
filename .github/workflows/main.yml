@@ -72,7 +72,7 @@ jobs:
           echo "" >> README.md
           echo "原始订阅链接：$NEW_URL" >> README.md
           echo "" >> README.md
-          echo "镜像订阅链接：https://sub.xiao313.dpdns.org" >> README.md
+          echo "镜像订阅链接：https://b2s.hdlr.dpdns.org" >> README.md
 
           git add README.md
           if git diff --cached --quiet; then
