@@ -1,0 +1,81 @@
+name: Sync Sub Link & Update Redirect
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 从上游原始 README 提取订阅链接
+        id: extract
+        run: |
+          UPSTREAM_README="https://raw.githubusercontent.com/bq2015/FreeProxies/main/README.md"
+          RAW=$(curl -sL --max-time 30 "$UPSTREAM_README")
+          LINK=$(echo "$RAW" | grep -oP 'https://blue2sea\.com/clash/[a-f0-9]+' | head -1)
+          if [ -z "$LINK" ]; then
+            echo "::warning::未从上游 README 中提取到订阅链接，跳过本次更新"
+            echo "SKIP=true" >> $GITHUB_OUTPUT
+          else
+            echo "提取到链接: $LINK"
+            echo "SKIP=false" >> $GITHUB_OUTPUT
+            echo "SUB_URL=$LINK" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 更新 Cloudflare 重定向规则
+        if: steps.extract.outputs.SKIP == 'false'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_RULESET_ID: ${{ secrets.CF_RULESET_ID }}
+          CF_RULE_ID: ${{ secrets.CF_RULE_ID }}
+          NEW_URL: ${{ steps.extract.outputs.SUB_URL }}
+        run: |
+          CURRENT_RULESET=$(curl -sS -X GET \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/rulesets/${CF_RULESET_ID}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}")
+          UPDATED_RULE=$(echo "$CURRENT_RULESET" | jq \
+            --arg rule_id "$CF_RULE_ID" \
+            --arg new_url "$NEW_URL" \
+            '.result.rules[] | select(.id == $rule_id) | .action_parameters.from_value.target_url.value = $new_url')
+          if [ -z "$UPDATED_RULE" ] || [ "$UPDATED_RULE" = "null" ]; then
+            echo "::error::在 Ruleset 中未找到 ID 为 ${CF_RULE_ID} 的规则，请检查 Secrets 中的 CF_RULE_ID"
+            exit 1
+          fi
+          RESPONSE=$(curl -sS -X PATCH \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/rulesets/${CF_RULESET_ID}/rules/${CF_RULE_ID}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "$UPDATED_RULE")
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "::error::Cloudflare API 返回失败"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+          echo "Cloudflare 规则已更新，新目标 URL: $NEW_URL"
+
+      - name: 生成 README 并推送
+        if: steps.extract.outputs.SKIP == 'false'
+        env:
+          NEW_URL: ${{ steps.extract.outputs.SUB_URL }}
+        run: |
+          echo "# 天边外免费代理" > README.md
+          echo "" >> README.md
+          echo "原始订阅链接：<$NEW_URL>" >> README.md
+          echo "" >> README.md
+          echo "镜像订阅链接：<https://b2s.hdlr.dpdns.org>" >> README.md
+          git diff --quiet README.md && echo "README 无变化，跳过提交" && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "chore: sync latest subscription link"
+          git push
