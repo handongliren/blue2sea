@@ -70,12 +70,17 @@ jobs:
         run: |
           echo "# 天边外免费代理" > README.md
           echo "" >> README.md
-          echo "原始订阅链接：<$NEW_URL>" >> README.md
+          echo "原始订阅链接：$NEW_URL" >> README.md
           echo "" >> README.md
-          echo "镜像订阅链接：<https://b2s.hdlr.dpdns.org>" >> README.md
-          git diff --quiet README.md && echo "README 无变化，跳过提交" && exit 0
+          echo "镜像订阅链接：https://sub.xiao313.dpdns.org" >> README.md
+
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "README 无变化，跳过提交"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
           git commit -m "chore: sync latest subscription link"
           git push
