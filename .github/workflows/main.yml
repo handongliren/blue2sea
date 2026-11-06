@@ -2,7 +2,7 @@ name: Sync Sub Link & Update Redirect
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '15 0 * * *'   # 每天 UTC 0:15 运行
   workflow_dispatch:
 
 jobs:
@@ -15,17 +15,43 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 从上游原始 README 提取订阅链接
+      - name: 从上游提取订阅链接（优先查询页，回退 README）
         id: extract
         run: |
           UPSTREAM_README="https://raw.githubusercontent.com/bq2015/FreeProxies/main/README.md"
-          RAW=$(curl -sL --max-time 30 "$UPSTREAM_README")
-          LINK=$(echo "$RAW" | grep -oP 'https://blue2sea\.com/clash/[a-f0-9]+' | head -1)
+          RAW_README=$(curl -sL --max-time 30 "$UPSTREAM_README")
+
+          # ============================================================
+          # 路径 1（优先）：从 README 中提取 querySubscriptionLink 查询链接
+          # README 中该链接格式为：
+          # https://blue2sea.com/order/querySubscriptionLink?coupon=BQK26H
+          # ============================================================
+          QUERY_URL=$(echo "$RAW_README" | grep -oP 'https://blue2sea\.com/order/querySubscriptionLink\?coupon=[A-Za-z0-9]+' | head -1)
+
+          LINK=""
+          if [ -n "$QUERY_URL" ]; then
+            echo "找到查询链接: $QUERY_URL"
+            # 访问查询页面，从中提取实际的订阅链接
+            # 查询页中订阅链接格式为：https://blue2sea.com/clash/<十六进制>
+            QUERY_PAGE=$(curl -sL --max-time 30 "$QUERY_URL")
+            LINK=$(echo "$QUERY_PAGE" | grep -oP 'https://blue2sea\.com/clash/[a-f0-9]+' | head -1)
+          fi
+
+          # ============================================================
+          # 路径 2（回退）：查询页失败时，直接从 README 中提取订阅链接
+          # README 中订阅链接格式为：
+          # https://blue2sea.com/clash/f53f34c5a555aa2d3472676a018625dc
+          # ============================================================
           if [ -z "$LINK" ]; then
-            echo "::warning::未从上游 README 中提取到订阅链接，跳过本次更新"
+            echo "查询页未提取到订阅链接，回退到直接从 README 提取"
+            LINK=$(echo "$RAW_README" | grep -oP 'https://blue2sea\.com/clash/[a-f0-9]+' | head -1)
+          fi
+
+          if [ -z "$LINK" ]; then
+            echo "::warning::查询页和 README 均未提取到订阅链接，跳过本次更新"
             echo "SKIP=true" >> $GITHUB_OUTPUT
           else
-            echo "提取到链接: $LINK"
+            echo "最终提取到链接: $LINK"
             echo "SKIP=false" >> $GITHUB_OUTPUT
             echo "SUB_URL=$LINK" >> $GITHUB_OUTPUT
           fi
@@ -42,25 +68,30 @@ jobs:
           CURRENT_RULESET=$(curl -sS -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/rulesets/${CF_RULESET_ID}" \
             -H "Authorization: Bearer ${CF_API_TOKEN}")
+
           UPDATED_RULE=$(echo "$CURRENT_RULESET" | jq \
             --arg rule_id "$CF_RULE_ID" \
             --arg new_url "$NEW_URL" \
             '.result.rules[] | select(.id == $rule_id) | .action_parameters.from_value.target_url.value = $new_url')
+
           if [ -z "$UPDATED_RULE" ] || [ "$UPDATED_RULE" = "null" ]; then
             echo "::error::在 Ruleset 中未找到 ID 为 ${CF_RULE_ID} 的规则，请检查 Secrets 中的 CF_RULE_ID"
             exit 1
           fi
+
           RESPONSE=$(curl -sS -X PATCH \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/rulesets/${CF_RULESET_ID}/rules/${CF_RULE_ID}" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data "$UPDATED_RULE")
+
           SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
           if [ "$SUCCESS" != "true" ]; then
             echo "::error::Cloudflare API 返回失败"
             echo "$RESPONSE" | jq .
             exit 1
           fi
+
           echo "Cloudflare 规则已更新，新目标 URL: $NEW_URL"
 
       - name: 生成 README 并推送
