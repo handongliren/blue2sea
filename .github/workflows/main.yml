@@ -1,8 +1,6 @@
 name: Sync Sub Link & Update Redirect
 
 on:
-  schedule:
-    - cron: '15 0 * * *'   # 每天 UTC 0:15 运行
   workflow_dispatch:
 
 jobs:
